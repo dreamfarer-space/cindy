@@ -207,6 +207,8 @@ describe('latexToUnicodeApproximation', () => {
     ['\\sqrt[4]{x}', '∜x'],
     ['\\sqrt[n]{a+b}', '√[n](a+b)'],
     ['\\sqrt{1-x^{2}}', '√(1-x²)'],
+    ['\\sqrt{\\alpha}x', '√αx'],
+    ['\\sqrt[n]{\\alpha}x', '√[n]αx'],
     ['\\hat{x} + \\bar{y} + \\vec{v}', 'x\u0302 + y\u0305 + v\u20d7'],
     ['\\{x\\} + x\\_1', '{x} + x_1'],
     ['x\\,y\\quad z', 'x y z'],
@@ -220,6 +222,14 @@ describe('latexToUnicodeApproximation', () => {
       expect(() => latexToUnicodeApproximation(source.slice(0, end))).not.toThrow();
     }
     expect(() => latexToUnicodeApproximation('\\sqrt{'.repeat(2000) + 'x' + '}'.repeat(2000))).not.toThrow();
+  });
+
+  // PR #7560 / Greptile 4391615793: the numerator must not be rendered
+  // speculatively when a denominator is absent. This exact input previously
+  // exceeded a 3s isolated reproduction budget (exponential repeated work).
+  it('returns readable text for nested fractions with missing denominators', () => {
+    const source = '\\frac{'.repeat(30) + 'x' + '}'.repeat(30);
+    expect(latexToUnicodeApproximation(source)).toBe('frac'.repeat(30) + 'x');
   });
 
   it('样式包装剥壳保内容,函数名保字面', () => {

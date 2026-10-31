@@ -400,6 +400,7 @@ function replaceLatexStructures(source: string, depth: number): string {
     }
   }
   type Argument = { text: string; end: number };
+  const commandRanges = new Map<string, Argument>();
   const skipSpace = (from: number) => {
     while (from < source.length && /\s/.test(source[from])) from += 1;
     return from;
@@ -410,47 +411,63 @@ function replaceLatexStructures(source: string, depth: number): string {
     if (source[start] === '{') {
       const end = groupEnds.get(start);
       return end == null ? null : {
-        text: replaceLatexStructures(source.slice(start + 1, end), nesting + 1), end: end + 1,
+        text: source.slice(start + 1, end), end: end + 1,
       };
     }
     // A single TeX token can itself take arguments: \frac\sqrt{3}2.
-    if (source[start] === '\\') return readCommand(start, nesting + 1);
+    if (source[start] === '\\') return readCommand(start, nesting + 1, true);
     const token = String.fromCodePoint(source.codePointAt(start)!);
     return { text: token, end: start + token.length };
   };
-  const operand = (text: string) => Array.from(flattenLatex(text)).length === 1 ? text : `(${text})`;
-  const readCommand = (start: number, nesting: number): Argument => {
+  // Keep an atomic operand's TeX boundary until flattenLatex has mapped its
+  // commands: √{\alpha}x must not become the unknown command \alphax.
+  const operand = (text: string) => Array.from(flattenLatex(text)).length === 1 ? `{${text}}` : `(${text})`;
+  const readCommand = (start: number, nesting: number, scanOnly = false): Argument => {
+    const rangeKey = `${start}:${nesting}`;
+    const cached = scanOnly ? commandRanges.get(rangeKey) : undefined;
+    if (cached) return cached;
+    const remember = (range: Argument) => {
+      if (scanOnly) commandRanges.set(rangeKey, range);
+      return range;
+    };
     let end = start + 1;
     while (end < source.length && /[a-zA-Z]/.test(source[end])) end += 1;
     if (end === start + 1) end = Math.min(source.length, end + 1);
     const raw = { text: source.slice(start, end), end };
     const name = source.slice(start + 1, end);
     const fraction = name === 'frac' || name === 'dfrac' || name === 'tfrac';
-    if (nesting >= 32 || (!fraction && name !== 'sqrt' && !LATEX_ACCENTS[name])) return raw;
-    let rootIndex: string | undefined;
+    if (nesting >= 32 || (!fraction && name !== 'sqrt' && !LATEX_ACCENTS[name])) return remember(raw);
+    let rootIndexSource: string | undefined;
     const indexStart = skipSpace(end);
     if (name === 'sqrt' && source[indexStart] === '[') {
       const indexEnd = groupEnds.get(indexStart);
-      if (indexEnd == null) return raw;
-      rootIndex = flattenLatex(replaceLatexStructures(source.slice(indexStart + 1, indexEnd), nesting + 1));
+      if (indexEnd == null) return remember(raw);
+      rootIndexSource = source.slice(indexStart + 1, indexEnd);
       end = indexEnd + 1;
     }
     const first = readArg(end, nesting);
-    if (!first) return raw;
+    if (!first) return remember(raw);
     const second = fraction ? readArg(first.end, nesting) : null;
-    if (fraction && !second) return raw;
-    const body = first.text;
+    if (fraction && !second) return remember(raw);
+    const resultEnd = second?.end ?? first.end;
+    // Locate every argument before rendering any of them. A malformed frac
+    // otherwise renders its numerator, then returns only the command token,
+    // causing the outer scan to render the same subtree again. Cache lexical
+    // scans too, so nested unbraced commands cannot multiply this work.
+    if (scanOnly) return remember({ text: source.slice(start, resultEnd), end: resultEnd });
+    const body = replaceLatexStructures(first.text, nesting + 1);
     let text: string;
     if (second) {
-      text = `${operand(body)}/${operand(second.text)}`;
+      text = `${operand(body)}/${operand(replaceLatexStructures(second.text, nesting + 1))}`;
     } else if (name === 'sqrt') {
+      const rootIndex = rootIndexSource === undefined ? undefined
+        : flattenLatex(replaceLatexStructures(rootIndexSource, nesting + 1));
       const root = rootIndex === undefined ? '√' : rootIndex === '3' ? '∛' : rootIndex === '4' ? '∜' : `√[${rootIndex}]`;
       text = `${root}${operand(body)}`;
     } else {
       const symbol = flattenLatex(body);
       text = Array.from(symbol).length === 1 ? symbol + LATEX_ACCENTS[name] : `${name}(${body})`;
     }
-    const resultEnd = second?.end ?? first.end;
     // Preserve postfix scripts and implicit products: (a/b)² and (a/b)c.
     // Without the parentheses both can be misread as part of the denominator.
     const next = source[skipSpace(resultEnd)] ?? '';
